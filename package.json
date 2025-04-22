@@ -2,7 +2,7 @@
   "dependencies": {
     "clipboardy": "^4.0.0",
     "puppeteer": "^24.6.1",
-    "puppeteer-core": "^24.6.1",
+    "puppeteer-core": "^24.7.0",
     "robotjs": "^0.6.0"
   }
 }

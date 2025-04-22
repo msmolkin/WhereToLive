@@ -4101,6 +4101,34 @@ const cityDatabase = [
     UTILITY_CONSIDERATIONS: "Climate-based utility variations (heating in winter, occasional AC in summer)",
     CULTURAL_CONSIDERATIONS: "Outdoor-oriented lifestyle, numerous coworking spaces, and tech industry growth",
     POLITICAL_SPECIFICS: "Progressive city policies within a swing state"
+  },
+  {
+    CITY_NAME: "San Juan",
+    COUNTRY_NAME: "Puerto Rico",
+    FOOD_ITEMS: "mofongo, tostones, seafood, tropical fruits, coffee, etc.",
+    RESTAURANTS: "traditional Puerto Rican eateries, mofongo spots, casual beachfront dining, mid-range restaurants, cafés",
+    SUPERMARKETS: "Walmart, Pueblo, SuperMax, Amigo",
+    LOCAL_MARKETS: "La Placita de Santurce, Mercado de Santurce",
+    PRIMARY_VEHICLE: "car",
+    VEHICLE_EXPENSES: "maintenance, parking, insurance",
+    FUEL_TYPE: "gasoline",
+    FUEL_UNIT: "gallon",
+    PUBLIC_TRANSPORT: "bus",
+    RIDESHARE: "taxi/ride-hailing",
+    AIRPORT: "Luis Muñoz Marín International Airport",
+    CITY_CENTER: "Old San Juan",
+    TRANSPORT_OPTIONS: "walking, buses, taxis, or drive cars",
+    TRANSPORT_CONSIDERATIONS: "the historic layout and compact coastal design",
+    TRANSPORT_SPECIFICS: "Pedestrian-friendly cobblestone streets in Old San Juan with scenic views",
+    TRANSPORT_CHALLENGES: "Limited parking and heavy tourist traffic during peak seasons",
+    NEIGHBORHOODS: "Old San Juan, Condado, Isla Verde, Santurce",
+    RENTAL_COSTS: "agency fees, deposit, etc.",
+    RENTAL_SPECIFICS: "Seasonal rental fluctuations and high demand in tourist areas",
+    HOUSING_CONSIDERATIONS: "Historic colonial buildings vs. modern developments with coastal views",
+    ADDITIONAL_UTILITIES: "internet, electricity",
+    UTILITY_CONSIDERATIONS: "Elevated utility costs during the hot summer months",
+    CULTURAL_CONSIDERATIONS: "Vibrant Puerto Rican traditions, music, art, and bilingual environment",
+    POLITICAL_SPECIFICS: "US territory regulations with stable political climate"
   }
 ];
 
