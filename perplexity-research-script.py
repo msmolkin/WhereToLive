@@ -7,6 +7,10 @@ import re
 from pathlib import Path
 from openai import OpenAI
 import argparse
+import concurrent.futures
+
+# Global variable to track total cost
+TOTAL_COST = 0.0
 
 class PerplexityResearcher:
     """
@@ -326,10 +330,124 @@ class PerplexityResearcher:
         print(f"Completed processing {processed_count} prompt files, skipped {skipped_count} files")
 
 
+def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3):
+    """
+    Process multiple prompt files in parallel.
+    
+    Args:
+        researcher: PerplexityResearcher instance
+        prompts_dir (str): Directory containing prompt files
+        limit (int, optional): Limit the number of files to process
+        max_workers (int): Maximum number of parallel workers
+    """
+    # Get all markdown files in the prompts directory
+    prompt_files = glob.glob(os.path.join(prompts_dir, "*.md"))
+    
+    if not prompt_files:
+        print(f"No prompt files found in {prompts_dir}")
+        return
+    
+    # Sort files for predictable processing order
+    prompt_files.sort()
+    
+    # Apply limit if specified
+    if limit and isinstance(limit, int) and limit > 0:
+        prompt_files = prompt_files[:limit]
+        print(f"Limiting processing to {limit} files")
+    
+    print(f"Found {len(prompt_files)} prompt files to process")
+    print(f"Processing with {max_workers} parallel workers")
+    
+    # Calculate estimated time based on 3 minutes per file (average Deep Research time)
+    # Adjust for parallel processing
+    estimated_minutes = (len(prompt_files) * 3) / min(max_workers, len(prompt_files))
+    print(f"Estimated processing time: {estimated_minutes:.1f} minutes")
+    print(f"Estimated completion time: {time.strftime('%H:%M:%S', time.localtime(time.time() + estimated_minutes * 60))}")
+    
+    processed_count = 0
+    skipped_count = 0
+    
+    # Prepare batch of tasks
+    tasks = []
+    for file_path in prompt_files:
+        # Extract the base filename without path or extension
+        base_name = os.path.basename(file_path)
+        
+        # Expected output filename - directly based on prompt filename
+        expected_output_name = base_name.replace('-prompt.md', '').lower() + f'.{researcher.format}'
+        output_path = os.path.join(researcher.output_dir, expected_output_name)
+        
+        # Get city name for display purposes only
+        city_name, _ = researcher.extract_city_name(file_path)
+        
+        # Debug information
+        print(f"Checking for existing file: {output_path}")
+        
+        if os.path.exists(output_path):
+            # Determine age of existing report
+            last_mod = os.path.getmtime(output_path)
+            age_in_days = (time.time() - last_mod) / (24 * 3600)
+            print(f"Found existing report for {city_name}, {age_in_days:.1f} days old")
+            
+            if age_in_days < 30:
+                print(f"Skipping {city_name} - report generated less than 1 month ago")
+                skipped_count += 1
+                continue
+                
+            # Ask user whether to regenerate outdated report
+            ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
+            if ans.lower() != 'y':
+                print(f"Skipping {city_name}")
+                skipped_count += 1
+                continue
+        
+        # Add this file to our processing tasks
+        tasks.append((file_path, city_name))
+    
+    # Process files in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for file_path, city_name in tasks:
+            # Read the prompt content
+            prompt_content = researcher.read_prompt_file(file_path)
+            if not prompt_content:
+                continue
+            
+            # Submit task to executor
+            future = executor.submit(process_single_file, researcher, prompt_content, city_name)
+            futures.append(future)
+        
+        # Wait for all tasks to complete
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+                if result:
+                    processed_count += 1
+            except Exception as e:
+                print(f"Error in processing task: {e}")
+    
+    print(f"Completed processing {processed_count} prompt files, skipped {skipped_count} files")
+    print(f"TOTAL_COST: ${TOTAL_COST:.4f}")
+
+
+def process_single_file(researcher, prompt_content, city_name):
+    """Helper function to process a single file for parallel execution"""
+    try:
+        response = researcher.process_prompt(prompt_content, city_name)
+        if response:
+            researcher.save_response(response, city_name)
+            return True
+    except Exception as e:
+        print(f"Error processing {city_name}: {e}")
+    return False
+
+
 def main():
     """
     Main function to parse arguments and run the script.
     """
+    global TOTAL_COST
+    
     parser = argparse.ArgumentParser(description="Process city prompts with Perplexity Deep Research API")
     
     parser.add_argument(
@@ -361,8 +479,8 @@ def main():
     parser.add_argument(
         "--delay", 
         type=float,
-        default=120.0,
-        help="Delay in seconds between API requests (default: 120.0)"
+        default=60.0,
+        help="Delay in seconds between API requests (default: 60.0)"
     )
     
     parser.add_argument(
@@ -374,6 +492,13 @@ def main():
         "--limit",
         type=int,
         help="Limit the number of cities to process (for testing or budget control)"
+    )
+    
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=3,
+        help="Number of parallel queries to run (default: 3)"
     )
     
     args = parser.parse_args()
@@ -392,30 +517,36 @@ def main():
     )
     
     # Process a single file or the entire directory
-    if args.single:
-        file_path = os.path.join(args.prompts_dir, args.single)
-        if os.path.exists(file_path):
-            city_name, clean_filename = researcher.extract_city_name(file_path)
-            # Skip or confirm regeneration for existing single report
-            output_path = os.path.join(researcher.output_dir, f"{clean_filename}.{researcher.format}")
-            if os.path.exists(output_path):
-                last_mod = os.path.getmtime(output_path)
-                if time.time() - last_mod < 30*24*3600:
-                    print(f"Skipping {city_name} - report generated less than 1 month ago")
-                    return
-                ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
-                if ans.lower() != 'y':
-                    print(f"Skipping {city_name}")
-                    return
-            prompt_content = researcher.read_prompt_file(file_path)
-            if prompt_content:
-                response = researcher.process_prompt(prompt_content, city_name)
-                if response:
-                    researcher.save_response(response, city_name)
+    try:
+        if args.single:
+            file_path = os.path.join(args.prompts_dir, args.single)
+            if os.path.exists(file_path):
+                city_name, clean_filename = researcher.extract_city_name(file_path)
+                # Skip or confirm regeneration for existing single report
+                output_path = os.path.join(researcher.output_dir, f"{clean_filename}.{researcher.format}")
+                if os.path.exists(output_path):
+                    last_mod = os.path.getmtime(output_path)
+                    if time.time() - last_mod < 30*24*3600:
+                        print(f"Skipping {city_name} - report generated less than 1 month ago")
+                        return
+                    ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
+                    if ans.lower() != 'y':
+                        print(f"Skipping {city_name}")
+                        return
+                prompt_content = researcher.read_prompt_file(file_path)
+                if prompt_content:
+                    response = researcher.process_prompt(prompt_content, city_name)
+                    if response:
+                        researcher.save_response(response, city_name)
+            else:
+                print(f"File not found: {file_path}")
         else:
-            print(f"File not found: {file_path}")
-    else:
-        researcher.process_directory(args.prompts_dir, limit=args.limit)
+            process_files_in_parallel(researcher, args.prompts_dir, args.limit, args.parallel)
+    except KeyboardInterrupt:
+        print(f"\n\nProcess interrupted by user.")
+        print(f"TOTAL_COST: ${TOTAL_COST:.4f}")
+        print("Exiting gracefully.")
+        exit(0)
 
 
 if __name__ == "__main__":
