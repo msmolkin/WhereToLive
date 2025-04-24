@@ -3,14 +3,21 @@ import pyautogui
 import time
 
 # Configuration
-NUM_FILES = 2  # Number of files to process
-DELAY_BETWEEN_ACTIONS = 0.5  # Adjust this value based on the system's performance
+NUM_FILES = 3  # Number of files to process
+DELAY_BETWEEN_ACTIONS = 2  # Adjust this value based on the system's performance
 DELAY_BETWEEN_ITERATIONS = 2  # Longer delay between file processing cycles
 
 def press_with_delay(keys, delay=DELAY_BETWEEN_ACTIONS):
-    """Press the specified keys with a delay afterwards."""
-    pyautogui.hotkey(*keys) if isinstance(keys, list) else pyautogui.press(keys)
-    time.sleep(delay)
+    try:
+        """Press the specified keys with a delay afterwards."""
+        # Print the keys being pressed for debugging
+        print(f"Pressing hotkey: {keys}") if isinstance(keys, list) else print(f"Pressing key: {keys}")
+        # Use pyautogui to press the keys
+        pyautogui.hotkey(*keys) if isinstance(keys, list) else pyautogui.press(keys)
+        time.sleep(delay)
+    except KeyboardInterrupt:
+        print("Automation interrupted by user.")
+        exit(0)
 
 def main():
     # Give the user some time to focus the right window before starting
