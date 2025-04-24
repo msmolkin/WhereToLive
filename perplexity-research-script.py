@@ -12,22 +12,38 @@ import concurrent.futures
 # Global variable to track total cost
 TOTAL_COST = 0.0
 
+class APIKeyRotationError(Exception):
+    """Custom exception raised when API key rotation fails or completes."""
+    pass
+
 class PerplexityResearcher:
     """
     A class to process city prompts and get detailed research responses using Perplexity's API.
     """
     
-    def __init__(self, api_key, output_dir="./research-results", format="markdown", delay=2.0):
+    def __init__(self, api_keys, output_dir="./research-results", format="markdown", delay=2.0, cost_threshold=4.0):
         """
         Initialize the PerplexityResearcher with API key and configuration.
         
         Args:
-            api_key (str): Your Perplexity API key
+            api_keys (list): List of your Perplexity API keys
             output_dir (str): Directory to save research results
             format (str): Output format (markdown or json)
             delay (float): Delay in seconds between API requests to avoid rate limiting
+            cost_threshold (float): Cost threshold in dollars before rotating API keys
         """
-        self.client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+        if isinstance(api_keys, str):
+            # Convert single API key to a list
+            api_keys = [api_keys]
+        
+        self.api_keys = api_keys
+        self.current_key_index = 1  # Start with the second key (index 1) TODO: change it to 0
+        self.cost_threshold = cost_threshold
+        self.last_threshold_crossed = 0.0
+        
+        # Initialize OpenAI client with first API key
+        self.client = OpenAI(api_key=self.api_keys[self.current_key_index], base_url="https://api.perplexity.ai")
+        
         self.output_dir = output_dir
         self.format = format
         self.delay = delay
@@ -36,6 +52,48 @@ class PerplexityResearcher:
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
             print(f"Created output directory: {self.output_dir}")
+    
+    def rotate_api_key(self):
+        """
+        Rotate to the next available API key.
+        
+        Returns:
+            bool: True if rotated successfully, exits gracefully if no more keys are available.
+        """
+        global TOTAL_COST
+
+        if len(self.api_keys) <= 1:
+            print("Warning: No additional API keys available for rotation")
+            raise APIKeyRotationError("No additional API keys available for rotation")
+
+        # If we're already on the last API key, exit gracefully
+        if self.current_key_index == len(self.api_keys) - 1:
+            raise APIKeyRotationError("Finished using the last API key. Exiting gracefully. No further searches will be performed.")
+        
+        old_index = self.current_key_index
+        self.current_key_index += 1  # Move to the next API key
+        
+        # Update the client with the new API key
+        self.client = OpenAI(api_key=self.api_keys[self.current_key_index], base_url="https://api.perplexity.ai")
+        
+        print(f"Rotated API key from #{old_index+1} to #{self.current_key_index+1}")
+        self.last_threshold_crossed = (TOTAL_COST // self.cost_threshold) * self.cost_threshold
+        return True
+    
+    def check_rotate_api_key(self):
+        """
+        Check if we need to rotate the API key based on cost threshold
+        """
+        global TOTAL_COST
+        
+        # If we've crossed another multiple of the threshold
+        current_threshold = (TOTAL_COST // self.cost_threshold) * self.cost_threshold
+        if current_threshold > self.last_threshold_crossed:
+            print(f"Cost threshold of ${self.cost_threshold} crossed (Total: ${TOTAL_COST:.4f})")
+            self.last_threshold_crossed = current_threshold
+            return self.rotate_api_key()
+        
+        return False
     
     def read_prompt_file(self, file_path):
         """
@@ -151,8 +209,10 @@ class PerplexityResearcher:
             print(f"  - Estimated cost for {city_name}: ${cost:.4f}")
             global TOTAL_COST
             TOTAL_COST += cost
-                
             
+            # Check if we need to rotate the API key
+            self.check_rotate_api_key()
+                
             return response
             
         except Exception as e:
@@ -282,7 +342,7 @@ class PerplexityResearcher:
             base_name = os.path.basename(file_path)
             
             # Expected output filename - directly based on prompt filename
-            expected_output_name = base_name.replace('-prompt.md', '').lower() + f'.{self.format}'
+            expected_output_name = base_name.replace('-prompt.md', '').lower() + '.md'
             output_path = os.path.join(self.output_dir, expected_output_name)
             
             # Get city name for display purposes only
@@ -458,6 +518,13 @@ def main():
     )
     
     parser.add_argument(
+        "--api-keys", 
+        required=False,
+        default=None,
+        help="Comma-separated list of Perplexity API keys"
+    )
+    
+    parser.add_argument(
         "--prompts-dir", 
         default="./city-prompts",
         help="Directory containing prompt files (default: ./city-prompts)"
@@ -501,19 +568,30 @@ def main():
         help="Number of parallel queries to run (default: 3)"
     )
     
+    parser.add_argument(
+        "--cost-threshold",
+        type=float,
+        default=4.0,
+        help="Cost threshold in dollars before rotating API keys (default: 5.0)"
+    )
+    
     args = parser.parse_args()
     
-    # Fallback to environment variable if --api-key not provided
-    api_key = args.api_key or os.environ.get("PERPLEXITY_API_KEY")
-    if not api_key:
-        parser.error("API key must be provided via --api-key or PERPLEXITY_API_KEY environment variable")
+    # Fallback to environment variable if --api-key or --api-keys not provided
+    api_keys = args.api_keys or args.api_key or os.environ.get("PERPLEXITY_API_KEYS")
+    if not api_keys:
+        parser.error("API keys must be provided via --api-keys, --api-key, or PERPLEXITY_API_KEYS environment variable")
+    
+    # Split API keys if provided as a comma-separated string
+    api_keys = [key.strip() for key in api_keys.split(",")]
     
     # Initialize the researcher
     researcher = PerplexityResearcher(
-        api_key=api_key,
+        api_keys=api_keys,
         output_dir=args.output_dir,
         format=args.format,
-        delay=args.delay
+        delay=args.delay,
+        cost_threshold=args.cost_threshold
     )
     
     # Process a single file or the entire directory
@@ -544,6 +622,11 @@ def main():
             process_files_in_parallel(researcher, args.prompts_dir, args.limit, args.parallel)
     except KeyboardInterrupt:
         print(f"\n\nProcess interrupted by user.")
+        print(f"TOTAL_COST: ${TOTAL_COST:.4f}")
+        print("Exiting gracefully.")
+        exit(0)
+    except APIKeyRotationError as e:
+        print(f"\n\n{str(e)}")
         print(f"TOTAL_COST: ${TOTAL_COST:.4f}")
         print("Exiting gracefully.")
         exit(0)
