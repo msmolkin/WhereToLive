@@ -112,18 +112,23 @@ class PerplexityResearcher:
             elapsed_time = time.time() - start_time
             print(f"Deep Research completed in {elapsed_time:.2f} seconds for {city_name}")
             
-            # Extract and display summary of usage for cost tracking
+            # Extract and display usage statistics
             if hasattr(response, 'usage'):
-                searches = getattr(response.usage, 'searches', 'N/A')
-                prompt_tokens = getattr(response.usage, 'prompt_tokens', 'N/A')
-                completion_tokens = getattr(response.usage, 'completion_tokens', 'N/A')
-                reasoning_tokens = getattr(response.usage, 'reasoning_tokens', 'N/A')
-                
                 print(f"Usage stats for {city_name}:")
-                print(f"  - Searches: {searches}")
-                print(f"  - Prompt tokens: {prompt_tokens}")
-                print(f"  - Completion tokens: {completion_tokens}")
-                print(f"  - Reasoning tokens: {reasoning_tokens}")
+                if hasattr(response.usage, 'prompt_tokens'):
+                    print(f"  - Prompt tokens: {response.usage.prompt_tokens}")
+                if hasattr(response.usage, 'completion_tokens'):
+                    print(f"  - Completion tokens: {response.usage.completion_tokens}")
+                if hasattr(response.usage, 'reasoning_tokens'):
+                    print(f"  - Reasoning tokens: {response.usage.reasoning_tokens}")
+                if hasattr(response.usage, 'citation_tokens'):
+                    print(f"  - Citation tokens: {response.usage.citation_tokens}")
+                if hasattr(response.usage, 'num_search_queries'):
+                    print(f"  - Search queries: {response.usage.num_search_queries}")
+            
+            # Display number of citations if available
+            if hasattr(response, 'citations'):
+                print(f"  - Number of citations: {len(response.citations)}")
             
             return response
             
@@ -151,19 +156,53 @@ class PerplexityResearcher:
                 # Extract the content
                 content = response.choices[0].message.content
                 
+                # Extract citations if they exist in the response
+                citations = []
+                if hasattr(response, 'citations') and response.citations:
+                    citations = response.citations
+                
+                # Check if the content already contains a sources/references section
+                has_sources_section = any(header in content.lower() for header in 
+                                          ['# sources', '# references', '## sources', '## references',
+                                           '### sources', '### references', 'sources:', 'references:'])
+                
+                # Save the main content
                 with open(output_path, 'w', encoding='utf-8') as file:
                     file.write(f"# {filename_base} Living Cost and Lifestyle Research\n\n")
                     file.write(content)
                     
+                    # Add a Sources section if we have citations and one doesn't already exist
+                    if citations and not has_sources_section:
+                        file.write("\n\n## Sources\n\n")
+                        for i, url in enumerate(citations, 1):
+                            file.write(f"{i}. [{url}]({url})\n")
+                
+                # Also save the raw response to a JSON file for reference
+                raw_response_path = os.path.join(self.output_dir, f"{clean_name}-raw.json")
+                with open(raw_response_path, 'w', encoding='utf-8') as file:
+                    # Extract fields we want to save
+                    json_data = {
+                        'id': response.id,
+                        'model': response.model,
+                        'created': response.created,
+                        'usage': response.usage.model_dump() if hasattr(response.usage, 'model_dump') else vars(response.usage),
+                        'citations': citations,
+                        'content': content
+                    }
+                    json.dump(json_data, file, indent=2)
+                
             elif self.format == "json":
                 # Save the full response as JSON
                 with open(output_path, 'w', encoding='utf-8') as file:
                     json.dump(response.model_dump(), file, indent=2)
             
             print(f"Saved research results to {output_path}")
+            print(f"Number of citations saved: {len(citations) if citations else 0}")
             
         except Exception as e:
             print(f"Error saving response for {filename_base}: {e}")
+            import traceback
+            traceback.print_exc()
     
     def process_directory(self, prompts_dir="./city-prompts", limit=None):
         """
