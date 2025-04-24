@@ -192,10 +192,26 @@ class PerplexityResearcher:
                     }
                     json.dump(json_data, file, indent=2)
                 
+                # Save full API response for future reference
+                raw_folder = os.path.join(self.output_dir, "raw-responses")
+                if not os.path.exists(raw_folder):
+                    os.makedirs(raw_folder)
+                raw_full_path = os.path.join(raw_folder, f"{clean_name}-full.json")
+                with open(raw_full_path, 'w', encoding='utf-8') as rf:
+                    json.dump(response.model_dump() if hasattr(response, 'model_dump') else response.model_dump(), rf, indent=2)
+            
             elif self.format == "json":
                 # Save the full response as JSON
                 with open(output_path, 'w', encoding='utf-8') as file:
                     json.dump(response.model_dump(), file, indent=2)
+
+                # Save full API response for future reference
+                raw_folder = os.path.join(self.output_dir, "raw-responses")
+                if not os.path.exists(raw_folder):
+                    os.makedirs(raw_folder)
+                raw_full_path = os.path.join(raw_folder, f"{clean_name}-full.json")
+                with open(raw_full_path, 'w', encoding='utf-8') as rf:
+                    json.dump(response.model_dump() if hasattr(response, 'model_dump') else response, rf, indent=2)
             
             print(f"Saved research results to {output_path}")
             print(f"Number of citations saved: {len(citations) if citations else 0}")
