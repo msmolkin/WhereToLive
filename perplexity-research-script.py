@@ -58,7 +58,7 @@ class PerplexityResearcher:
             filename (str): Filename of the format city-country-prompt.md
             
         Returns:
-            tuple: (city_name, country_name)
+            tuple: (city_name, country_name, clean_filename)
         """
         base_name = os.path.basename(filename)
         match = re.match(r'(.+)-(.+)-prompt\.md', base_name)
@@ -66,10 +66,14 @@ class PerplexityResearcher:
         if match:
             city = match.group(1).replace('-', ' ').title()
             country = match.group(2).replace('-', ' ').title()
-            return f"{city}, {country}"
+            formatted_name = f"{city}, {country}"
+            # Return the original filename prefix as well (without -prompt.md)
+            clean_filename = base_name.replace('-prompt.md', '')
+            return formatted_name, clean_filename
         else:
             # Just use the filename without extension as a fallback
-            return os.path.splitext(base_name)[0].replace('-', ' ').title()
+            clean_name = os.path.splitext(base_name)[0].replace('-prompt', '')
+            return clean_name.replace('-', ' ').title(), clean_name
     
     def process_prompt(self, prompt, city_name):
         """
@@ -114,21 +118,36 @@ class PerplexityResearcher:
             
             # Extract and display usage statistics
             if hasattr(response, 'usage'):
+                cost = 0
                 print(f"Usage stats for {city_name}:")
                 if hasattr(response.usage, 'prompt_tokens'):
-                    print(f"  - Prompt tokens: {response.usage.prompt_tokens}")
+                    prompt_tokens = response.usage.prompt_tokens
+                    print(f"  - Prompt tokens: {prompt_tokens}")
+                    cost += prompt_tokens * 0.000004
                 if hasattr(response.usage, 'completion_tokens'):
-                    print(f"  - Completion tokens: {response.usage.completion_tokens}")
+                    completion_tokens = response.usage.completion_tokens
+                    print(f"  - Completion tokens: {completion_tokens}")
+                    cost += completion_tokens * 0.00002
                 if hasattr(response.usage, 'reasoning_tokens'):
-                    print(f"  - Reasoning tokens: {response.usage.reasoning_tokens}")
+                    reasoning_tokens = response.usage.reasoning_tokens
+                    print(f"  - Reasoning tokens: {reasoning_tokens}")
+                    cost += reasoning_tokens * 0.00003
                 if hasattr(response.usage, 'citation_tokens'):
-                    print(f"  - Citation tokens: {response.usage.citation_tokens}")
+                    citation_tokens = response.usage.citation_tokens
+                    print(f"  - Citation tokens: {citation_tokens}")
+                    cost += citation_tokens * 0.000004
                 if hasattr(response.usage, 'num_search_queries'):
-                    print(f"  - Search queries: {response.usage.num_search_queries}")
-            
-            # Display number of citations if available
+                    num_searches = response.usage.num_search_queries
+                    print(f"  - Search queries: {num_searches}")
+                    cost += num_searches * 0.005
+
             if hasattr(response, 'citations'):
                 print(f"  - Number of citations: {len(response.citations)}")
+
+            print(f"  - Estimated cost for {city_name}: ${cost:.4f}")
+            global TOTAL_COST
+            TOTAL_COST += cost
+                
             
             return response
             
@@ -179,7 +198,7 @@ class PerplexityResearcher:
                             file.write(f"{i}. [{url}]({url})\n")
                 
                 # Also save the raw response to a JSON file for reference
-                raw_response_path = os.path.join(self.output_dir, f"{clean_name}-raw.json")
+                raw_response_path = os.path.join(self.output_dir, "raw-responses", f"{clean_name}-raw.json")
                 with open(raw_response_path, 'w', encoding='utf-8') as file:
                     # Extract fields we want to save
                     json_data = {
@@ -251,24 +270,39 @@ class PerplexityResearcher:
         print(f"Estimated processing time: {estimated_minutes} minutes")
         print(f"Estimated completion time: {time.strftime('%H:%M:%S', time.localtime(time.time() + estimated_minutes * 60))}")
         
+        processed_count = 0
+        skipped_count = 0
+        
         for i, file_path in enumerate(prompt_files):
-            # Extract city name from filename
-            city_name = self.extract_city_name(file_path)
+            # Extract the base filename without path or extension
+            base_name = os.path.basename(file_path)
             
-            # Check if output file already exists to support resuming
-            clean_name = city_name.replace(', ', '-').replace(' ', '-').lower()
-            output_path = os.path.join(self.output_dir, f"{clean_name}.{self.format}")
+            # Expected output filename - directly based on prompt filename
+            expected_output_name = base_name.replace('-prompt.md', '').lower() + f'.{self.format}'
+            output_path = os.path.join(self.output_dir, expected_output_name)
+            
+            # Get city name for display purposes only
+            city_name, _ = self.extract_city_name(file_path)
+            
+            # Debug information
+            print(f"Checking for existing file: {output_path}")
             
             if os.path.exists(output_path):
                 # Determine age of existing report
                 last_mod = os.path.getmtime(output_path)
-                if time.time() - last_mod < 30*24*3600:
+                age_in_days = (time.time() - last_mod) / (24 * 3600)
+                print(f"Found existing report for {city_name}, {age_in_days:.1f} days old")
+                
+                if age_in_days < 30:
                     print(f"Skipping {city_name} - report generated less than 1 month ago")
+                    skipped_count += 1
                     continue
+                    
                 # Ask user whether to regenerate outdated report
                 ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
                 if ans.lower() != 'y':
                     print(f"Skipping {city_name}")
+                    skipped_count += 1
                     continue
             
             # Read the prompt content
@@ -282,13 +316,14 @@ class PerplexityResearcher:
             # Save the response
             if response:
                 self.save_response(response, city_name)
+                processed_count += 1
             
             # Delay between API calls to avoid rate limiting
             if i < len(prompt_files) - 1:  # No need to delay after the last request
                 print(f"Waiting {self.delay} seconds before next request...")
                 time.sleep(self.delay)
         
-        print(f"Completed processing {len(prompt_files)} prompt files")
+        print(f"Completed processing {processed_count} prompt files, skipped {skipped_count} files")
 
 
 def main():
@@ -360,10 +395,9 @@ def main():
     if args.single:
         file_path = os.path.join(args.prompts_dir, args.single)
         if os.path.exists(file_path):
-            city_name = researcher.extract_city_name(file_path)
+            city_name, clean_filename = researcher.extract_city_name(file_path)
             # Skip or confirm regeneration for existing single report
-            clean_name = city_name.replace(', ', '-').replace(' ', '-').lower()
-            output_path = os.path.join(researcher.output_dir, f"{clean_name}.{researcher.format}")
+            output_path = os.path.join(researcher.output_dir, f"{clean_filename}.{researcher.format}")
             if os.path.exists(output_path):
                 last_mod = os.path.getmtime(output_path)
                 if time.time() - last_mod < 30*24*3600:
