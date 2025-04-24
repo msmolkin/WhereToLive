@@ -150,7 +150,7 @@ class PerplexityResearcher:
         try:
             # Format the filename
             clean_name = filename_base.replace(', ', '-').replace(' ', '-').lower()
-            output_path = os.path.join(self.output_dir, f"{clean_name}.{"md" if self.format == 'markdown' else self.format}")
+            output_path = os.path.join(self.output_dir, f"{clean_name}.{'md' if self.format == 'markdown' else self.format}")
             print(f"Saving research results to {output_path}")
             
             if self.format == "markdown":
@@ -299,7 +299,8 @@ def main():
     
     parser.add_argument(
         "--api-key", 
-        required=True,
+        required=False,
+        default=None,
         help="Your Perplexity API key"
     )
     
@@ -342,9 +343,14 @@ def main():
     
     args = parser.parse_args()
     
+    # Fallback to environment variable if --api-key not provided
+    api_key = args.api_key or os.environ.get("PERPLEXITY_API_KEY")
+    if not api_key:
+        parser.error("API key must be provided via --api-key or PERPLEXITY_API_KEY environment variable")
+    
     # Initialize the researcher
     researcher = PerplexityResearcher(
-        api_key=args.api_key,
+        api_key=api_key,
         output_dir=args.output_dir,
         format=args.format,
         delay=args.delay
