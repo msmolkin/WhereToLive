@@ -150,7 +150,8 @@ class PerplexityResearcher:
         try:
             # Format the filename
             clean_name = filename_base.replace(', ', '-').replace(' ', '-').lower()
-            output_path = os.path.join(self.output_dir, f"{clean_name}.{self.format}")
+            output_path = os.path.join(self.output_dir, f"{clean_name}.{"md" if self.format == 'markdown' else self.format}")
+            print(f"Saving research results to {output_path}")
             
             if self.format == "markdown":
                 # Extract the content
@@ -243,8 +244,16 @@ class PerplexityResearcher:
             output_path = os.path.join(self.output_dir, f"{clean_name}.{self.format}")
             
             if os.path.exists(output_path):
-                print(f"Skipping {city_name} - output file already exists")
-                continue
+                # Determine age of existing report
+                last_mod = os.path.getmtime(output_path)
+                if time.time() - last_mod < 30*24*3600:
+                    print(f"Skipping {city_name} - report generated less than 1 month ago")
+                    continue
+                # Ask user whether to regenerate outdated report
+                ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
+                if ans.lower() != 'y':
+                    print(f"Skipping {city_name}")
+                    continue
             
             # Read the prompt content
             prompt_content = self.read_prompt_file(file_path)
@@ -330,6 +339,18 @@ def main():
         file_path = os.path.join(args.prompts_dir, args.single)
         if os.path.exists(file_path):
             city_name = researcher.extract_city_name(file_path)
+            # Skip or confirm regeneration for existing single report
+            clean_name = city_name.replace(', ', '-').replace(' ', '-').lower()
+            output_path = os.path.join(researcher.output_dir, f"{clean_name}.{researcher.format}")
+            if os.path.exists(output_path):
+                last_mod = os.path.getmtime(output_path)
+                if time.time() - last_mod < 30*24*3600:
+                    print(f"Skipping {city_name} - report generated less than 1 month ago")
+                    return
+                ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
+                if ans.lower() != 'y':
+                    print(f"Skipping {city_name}")
+                    return
             prompt_content = researcher.read_prompt_file(file_path)
             if prompt_content:
                 response = researcher.process_prompt(prompt_content, city_name)
