@@ -35,9 +35,12 @@ class PerplexityResearcher:
         if isinstance(api_keys, str):
             # Convert single API key to a list
             api_keys = [api_keys]
+            self.is_rotate_keys = False
+        elif isinstance(api_keys, list):
+            self.is_rotate_keys = True
         
         self.api_keys = api_keys
-        self.current_key_index = 1  # Start with the second key (index 1) TODO: change it to 0
+        self.current_key_index = 0
         self.cost_threshold = cost_threshold
         self.last_threshold_crossed = 0.0
         
@@ -88,7 +91,7 @@ class PerplexityResearcher:
         
         # If we've crossed another multiple of the threshold
         current_threshold = (TOTAL_COST // self.cost_threshold) * self.cost_threshold
-        if current_threshold > self.last_threshold_crossed:
+        if self.is_rotate_keys and current_threshold > self.last_threshold_crossed:
             print(f"Cost threshold of ${self.cost_threshold} crossed (Total: ${TOTAL_COST:.4f})")
             self.last_threshold_crossed = current_threshold
             return self.rotate_api_key()
@@ -390,7 +393,7 @@ class PerplexityResearcher:
         print(f"Completed processing {processed_count} prompt files, skipped {skipped_count} files")
 
 
-def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3):
+def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3, delay=60.0):
     """
     Process multiple prompt files in parallel.
     
@@ -398,7 +401,8 @@ def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3
         researcher: PerplexityResearcher instance
         prompts_dir (str): Directory containing prompt files
         limit (int, optional): Limit the number of files to process
-        max_workers (int): Maximum number of parallel workers
+        max_workers (int): Maximum number of parallel workers in a batch
+        delay (float): Delay in seconds between batches
     """
     # Get all markdown files in the prompts directory
     prompt_files = glob.glob(os.path.join(prompts_dir, "*.md"))
@@ -416,13 +420,16 @@ def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3
         print(f"Limiting processing to {limit} files")
     
     print(f"Found {len(prompt_files)} prompt files to process")
-    print(f"Processing with {max_workers} parallel workers")
+    print(f"Processing with {max_workers} parallel workers per batch")
     
-    # Calculate estimated time based on 3 minutes per file (average Deep Research time)
-    # Adjust for parallel processing
+    # Calculate estimated time based on 3 minutes per file plus delays between batches
+    batches_count = (len(prompt_files) + max_workers - 1) // max_workers  # Ceiling division
     estimated_minutes = (len(prompt_files) * 3) / min(max_workers, len(prompt_files))
-    print(f"Estimated processing time: {estimated_minutes:.1f} minutes")
-    print(f"Estimated completion time: {time.strftime('%H:%M:%S', time.localtime(time.time() + estimated_minutes * 60))}")
+    estimated_delay_minutes = (batches_count - 1) * delay / 60  # Convert seconds to minutes
+    total_estimated_minutes = estimated_minutes + estimated_delay_minutes
+    
+    print(f"Estimated processing time: {total_estimated_minutes:.1f} minutes")
+    print(f"Estimated completion time: {time.strftime('%H:%M:%S', time.localtime(time.time() + total_estimated_minutes * 60))}")
     
     processed_count = 0
     skipped_count = 0
@@ -461,32 +468,41 @@ def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3
                 skipped_count += 1
                 continue
         
-        # Add this file to our processing tasks
-        tasks.append((file_path, city_name))
-    
-    # Process files in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for file_path, city_name in tasks:
-            # Read the prompt content
-            prompt_content = researcher.read_prompt_file(file_path)
-            if not prompt_content:
-                continue
+        # Read the prompt content
+        prompt_content = researcher.read_prompt_file(file_path)
+        if not prompt_content:
+            continue
             
-            # Submit task to executor
-            future = executor.submit(process_single_file, researcher, prompt_content, city_name)
-            futures.append(future)
-        
-        # Wait for all tasks to complete
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                result = future.result()
-                if result:
-                    processed_count += 1
-            except Exception as e:
-                print(f"Error in processing task: {e}")
+        # Add this file to our processing tasks
+        tasks.append((file_path, city_name, prompt_content))
     
-    print(f"Completed processing {processed_count} prompt files, skipped {skipped_count} files")
+    # Process files in parallel batches
+    for batch_idx in range(0, len(tasks), max_workers):
+        batch = tasks[batch_idx:batch_idx + max_workers]
+        print(f"\nProcessing batch {batch_idx // max_workers + 1} of {(len(tasks) + max_workers - 1) // max_workers}")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for _, city_name, prompt_content in batch:
+                # Submit task to executor
+                future = executor.submit(process_single_file, researcher, prompt_content, city_name)
+                futures.append(future)
+            
+            # Wait for all tasks in this batch to complete
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result:
+                        processed_count += 1
+                except Exception as e:
+                    print(f"Error in processing task: {e}")
+        
+        # Apply delay after each batch except the last one
+        if batch_idx + max_workers < len(tasks):
+            print(f"\nBatch completed. Waiting {delay} seconds before processing next batch...")
+            time.sleep(delay)
+    
+    print(f"\nCompleted processing {processed_count} prompt files, skipped {skipped_count} files")
     print(f"TOTAL_COST: ${TOTAL_COST:.4f}")
 
 
@@ -577,19 +593,30 @@ def main():
     
     args = parser.parse_args()
     
-    # Fallback to environment variable if --api-key or --api-keys not provided
-    api_keys = args.api_keys or args.api_key or os.environ.get("PERPLEXITY_API_KEYS")
-    if not api_keys:
-        parser.error("API keys must be provided via --api-keys, --api-key, or PERPLEXITY_API_KEYS environment variable")
+    # Check if a single API key is provided first, then fall back to api-keys or environment
+    api_keys = None
+    if args.api_key:
+        # If a single API key is provided, use only that one
+        api_keys = [args.api_key]
+        print("Using single API key provided via --api-key (rotation disabled)")
+    elif args.api_keys:
+        # If multiple API keys are provided, split them
+        api_keys = [key.strip() for key in args.api_keys.split(",")]
+        print(f"Using {len(api_keys)} API keys with rotation")
+    elif os.environ.get("PERPLEXITY_API_KEYS"):
+        # Fall back to environment variable
+        env_keys = os.environ.get("PERPLEXITY_API_KEYS")
+        api_keys = [key.strip() for key in env_keys.split(",")]
+        print(f"Using {len(api_keys)} API keys from environment variable")
     
-    # Split API keys if provided as a comma-separated string
-    api_keys = [key.strip() for key in api_keys.split(",")]
+    if not api_keys:
+        parser.error("API keys must be provided via --api-key, --api-keys, or PERPLEXITY_API_KEYS environment variable")
     
     # Initialize the researcher
     researcher = PerplexityResearcher(
         api_keys=api_keys,
         output_dir=args.output_dir,
-        format=args.format,
+        format="md" if args.format == "markdown" else args.format,
         delay=args.delay,
         cost_threshold=args.cost_threshold
     )
