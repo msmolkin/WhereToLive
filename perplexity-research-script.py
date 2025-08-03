@@ -8,6 +8,7 @@ from pathlib import Path
 from openai import OpenAI
 import argparse
 import concurrent.futures
+import threading
 
 # Global variable to track total cost
 TOTAL_COST = 0.0
@@ -21,12 +22,13 @@ class PerplexityResearcher:
     A class to process city prompts and get detailed research responses using Perplexity's API.
     """
     
-    def __init__(self, api_keys, output_dir="./research-results", format="markdown", delay=2.0, cost_threshold=4.0):
+    def __init__(self, api_keys, lock, output_dir="./research-results", format="markdown", delay=2.0, cost_threshold=4.0):
         """
         Initialize the PerplexityResearcher with API key and configuration.
         
         Args:
             api_keys (list): List of your Perplexity API keys
+            lock (threading.Lock): Lock for thread-safe operations like cost updates
             output_dir (str): Directory to save research results
             format (str): Output format (markdown or json)
             delay (float): Delay in seconds between API requests to avoid rate limiting
@@ -37,12 +39,14 @@ class PerplexityResearcher:
             api_keys = [api_keys]
             self.is_rotate_keys = False
         elif isinstance(api_keys, list):
-            self.is_rotate_keys = True
+            # If there's only one key in the list, no rotation
+            self.is_rotate_keys = len(api_keys) > 1
         
         self.api_keys = api_keys
         self.current_key_index = 0
         self.cost_threshold = cost_threshold
         self.last_threshold_crossed = 0.0
+        self.lock = lock
         
         # Initialize OpenAI client with first API key
         self.client = OpenAI(api_key=self.api_keys[self.current_key_index], base_url="https://api.perplexity.ai")
@@ -188,22 +192,27 @@ class PerplexityResearcher:
                 if hasattr(response.usage, 'prompt_tokens'):
                     prompt_tokens = response.usage.prompt_tokens
                     print(f"  - Prompt tokens: {prompt_tokens}")
-                    cost += prompt_tokens * 0.000004
+                    # Standard model pricing: $0.20/1M tokens for input
+                    cost += (prompt_tokens / 1_000_000) * 0.20
                 if hasattr(response.usage, 'completion_tokens'):
                     completion_tokens = response.usage.completion_tokens
                     print(f"  - Completion tokens: {completion_tokens}")
-                    cost += completion_tokens * 0.00002
+                    # Standard model pricing: $1.00/1M tokens for output
+                    cost += (completion_tokens / 1_000_000) * 1.00
                 if hasattr(response.usage, 'reasoning_tokens'):
                     reasoning_tokens = response.usage.reasoning_tokens
                     print(f"  - Reasoning tokens: {reasoning_tokens}")
-                    cost += reasoning_tokens * 0.00003
+                    # Sonar Deep Research specific: $1.00/1M tokens for reasoning
+                    cost += (reasoning_tokens / 1_000_000) * 1.00
                 if hasattr(response.usage, 'citation_tokens'):
                     citation_tokens = response.usage.citation_tokens
                     print(f"  - Citation tokens: {citation_tokens}")
-                    cost += citation_tokens * 0.000004
+                    # Sonar Deep Research specific: $0.20/1M tokens for citations
+                    cost += (citation_tokens / 1_000_000) * 0.20
                 if hasattr(response.usage, 'num_search_queries'):
                     num_searches = response.usage.num_search_queries
                     print(f"  - Search queries: {num_searches}")
+                    # Sonar Deep Research specific: $0.005 per search
                     cost += num_searches * 0.005
 
             if hasattr(response, 'citations'):
@@ -211,7 +220,9 @@ class PerplexityResearcher:
 
             print(f"  - Estimated cost for {city_name}: ${cost:.4f}")
             global TOTAL_COST
-            TOTAL_COST += cost
+            
+            with self.lock:
+                TOTAL_COST += cost
             
             # Check if we need to rotate the API key
             self.check_rotate_api_key()
@@ -236,17 +247,16 @@ class PerplexityResearcher:
         try:
             # Format the filename
             clean_name = filename_base.replace(', ', '-').replace(' ', '-').lower()
-            output_path = os.path.join(self.output_dir, f"{clean_name}.{'md' if self.format == 'markdown' else self.format}")
+            output_path = os.path.join(self.output_dir, f"{clean_name}.{self.format}")
             print(f"Saving research results to {output_path}")
+            
+            citations = []
+            if hasattr(response, 'citations') and response.citations:
+                citations = response.citations
             
             if self.format == "markdown":
                 # Extract the content
                 content = response.choices[0].message.content
-                
-                # Extract citations if they exist in the response
-                citations = []
-                if hasattr(response, 'citations') and response.citations:
-                    citations = response.citations
                 
                 # Check if the content already contains a sources/references section
                 has_sources_section = any(header in content.lower() for header in 
@@ -300,7 +310,7 @@ class PerplexityResearcher:
                     json.dump(response.model_dump() if hasattr(response, 'model_dump') else response, rf, indent=2)
             
             print(f"Saved research results to {output_path}")
-            print(f"Number of citations saved: {len(citations) if citations else 0}")
+            print(f"Number of citations saved: {len(citations)}")
             
         except Exception as e:
             print(f"Error saving response for {filename_base}: {e}")
@@ -393,16 +403,16 @@ class PerplexityResearcher:
         print(f"Completed processing {processed_count} prompt files, skipped {skipped_count} files")
 
 
-def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3, delay=60.0):
+def process_files_in_parallel(researchers, prompts_dir, max_workers, delay, limit=None):
     """
     Process multiple prompt files in parallel.
     
     Args:
-        researcher: PerplexityResearcher instance
+        researchers: List of PerplexityResearcher instances (one per API key)
         prompts_dir (str): Directory containing prompt files
-        limit (int, optional): Limit the number of files to process
         max_workers (int): Maximum number of parallel workers in a batch
         delay (float): Delay in seconds between batches
+        limit (int, optional): Limit the number of files to process
     """
     # Get all markdown files in the prompts directory
     prompt_files = glob.glob(os.path.join(prompts_dir, "*.md"))
@@ -414,93 +424,78 @@ def process_files_in_parallel(researcher, prompts_dir, limit=None, max_workers=3
     # Sort files for predictable processing order
     prompt_files.sort()
     
-    # Apply limit if specified
-    if limit and isinstance(limit, int) and limit > 0:
-        prompt_files = prompt_files[:limit]
-        print(f"Limiting processing to {limit} files")
-    
-    print(f"Found {len(prompt_files)} prompt files to process")
-    print(f"Processing with {max_workers} parallel workers per batch")
-    
-    # Calculate estimated time based on 3 minutes per file plus delays between batches
-    batches_count = (len(prompt_files) + max_workers - 1) // max_workers  # Ceiling division
-    estimated_minutes = (len(prompt_files) * 3) / min(max_workers, len(prompt_files))
-    estimated_delay_minutes = (batches_count - 1) * delay / 60  # Convert seconds to minutes
-    total_estimated_minutes = estimated_minutes + estimated_delay_minutes
-    
-    print(f"Estimated processing time: {total_estimated_minutes:.1f} minutes")
-    print(f"Estimated completion time: {time.strftime('%H:%M:%S', time.localtime(time.time() + total_estimated_minutes * 60))}")
-    
-    processed_count = 0
+    # Prepare batch of tasks, skipping existing ones
+    tasks = []
     skipped_count = 0
     
-    # Prepare batch of tasks
-    tasks = []
+    output_format = researchers[0].format if researchers else 'md'
+    output_dir = researchers[0].output_dir if researchers else './research-results'
+
     for file_path in prompt_files:
-        # Extract the base filename without path or extension
         base_name = os.path.basename(file_path)
         
-        # Expected output filename - directly based on prompt filename
-        expected_output_name = base_name.replace('-prompt.md', '').lower() + f'.{researcher.format}'
-        output_path = os.path.join(researcher.output_dir, expected_output_name)
+        expected_output_name = base_name.replace('-prompt.md', '').lower() + f'.{output_format}'
+        output_path = os.path.join(output_dir, expected_output_name)
         
-        # Get city name for display purposes only
-        city_name, _ = researcher.extract_city_name(file_path)
-        
-        # Debug information
-        print(f"Checking for existing file: {output_path}")
+        city_name, _ = researchers[0].extract_city_name(file_path) if researchers else ("Unknown", base_name)
         
         if os.path.exists(output_path):
-            # Determine age of existing report
-            last_mod = os.path.getmtime(output_path)
-            age_in_days = (time.time() - last_mod) / (24 * 3600)
-            print(f"Found existing report for {city_name}, {age_in_days:.1f} days old")
+            print(f"Skipping {city_name} - report already exists at {output_path}")
+            skipped_count += 1
+            continue
             
-            if age_in_days < 30:
-                print(f"Skipping {city_name} - report generated less than 1 month ago")
-                skipped_count += 1
-                continue
-                
-            # Ask user whether to regenerate outdated report
-            ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
-            if ans.lower() != 'y':
-                print(f"Skipping {city_name}")
-                skipped_count += 1
-                continue
-        
         # Read the prompt content
-        prompt_content = researcher.read_prompt_file(file_path)
+        prompt_content = researchers[0].read_prompt_file(file_path) if researchers else None
         if not prompt_content:
             continue
             
         # Add this file to our processing tasks
         tasks.append((file_path, city_name, prompt_content))
+
+    if limit and isinstance(limit, int) and limit > 0:
+        tasks = tasks[:limit]
+
+    if not tasks:
+        print("No new cities to research.")
+        return
+
+    # Calculate estimated time
+    num_workers = min(max_workers, len(tasks))
+    if num_workers > 0 :
+        batches_count = (len(tasks) + num_workers - 1) // num_workers
+        estimated_minutes = (len(tasks) * 3) / num_workers
+        estimated_delay_minutes = (batches_count - 1) * delay / 60
+        total_estimated_minutes = estimated_minutes + estimated_delay_minutes
+    else:
+        total_estimated_minutes = 0
+
     
-    # Process files in parallel batches
-    for batch_idx in range(0, len(tasks), max_workers):
-        batch = tasks[batch_idx:batch_idx + max_workers]
-        print(f"\nProcessing batch {batch_idx // max_workers + 1} of {(len(tasks) + max_workers - 1) // max_workers}")
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for _, city_name, prompt_content in batch:
-                # Submit task to executor
-                future = executor.submit(process_single_file, researcher, prompt_content, city_name)
-                futures.append(future)
+    print(f"\nWill process {len(tasks)} new cities with {num_workers} parallel workers.")
+    print(f"Estimated processing time: {total_estimated_minutes:.1f} minutes")
+    print(f"Estimated completion time: {time.strftime('%H:%M:%S', time.localtime(time.time() + total_estimated_minutes * 60))}")
+    
+    processed_count = 0
+    
+    # Process files in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = []
+        for i, task_data in enumerate(tasks):
+            # Distribute tasks among researchers
+            researcher_for_task = researchers[i % len(researchers)]
+            _, city_name, prompt_content = task_data
             
-            # Wait for all tasks in this batch to complete
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    result = future.result()
-                    if result:
-                        processed_count += 1
-                except Exception as e:
-                    print(f"Error in processing task: {e}")
-        
-        # Apply delay after each batch except the last one
-        if batch_idx + max_workers < len(tasks):
-            print(f"\nBatch completed. Waiting {delay} seconds before processing next batch...")
-            time.sleep(delay)
+            # Submit task to executor
+            future = executor.submit(process_single_file, researcher_for_task, prompt_content, city_name)
+            futures.append(future)
+            
+        # Wait for all tasks to complete
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+                if result:
+                    processed_count += 1
+            except Exception as e:
+                print(f"Error in processing task: {e}")
     
     print(f"\nCompleted processing {processed_count} prompt files, skipped {skipped_count} files")
     print(f"TOTAL_COST: ${TOTAL_COST:.4f}")
@@ -517,6 +512,44 @@ def process_single_file(researcher, prompt_content, city_name):
         print(f"Error processing {city_name}: {e}")
     return False
 
+
+def print_estimates(num_files, max_workers, delay):
+    """
+    Prints the estimated time and cost for the research.
+    """
+    # Cost estimation constants.
+    # NOTE: This is a rough estimate. Actual cost depends on the complexity of the research.
+    # We use a conservative number here.
+    AVG_COST_PER_CITY = 0.10  # in USD (Adjusted based on more accurate pricing)
+
+    # Time estimation constants
+    AVG_MINUTES_PER_CITY = 3.0 # As used elsewhere in the script
+
+    # Total estimated cost
+    total_estimated_cost = num_files * AVG_COST_PER_CITY
+
+    # Time estimation
+    num_workers = min(max_workers, num_files)
+    if num_workers > 0:
+        # Number of batches
+        batches_count = (num_files + num_workers - 1) // num_workers
+        # Time for processing all files, considering parallel execution
+        processing_time_minutes = (num_files * AVG_MINUTES_PER_CITY) / num_workers
+        # Time for delays between batches is not relevant for a single batch run
+        if batches_count > 1:
+            delay_minutes = (batches_count - 1) * delay / 60
+            total_estimated_minutes = processing_time_minutes + delay_minutes
+        else:
+            total_estimated_minutes = processing_time_minutes
+    else:
+        total_estimated_minutes = 0
+
+    print("\n--- Research Plan ---")
+    print(f"Cities to research: {num_files}")
+    print(f"Parallel workers:   {num_workers}")
+    print(f"Estimated time:     ~{total_estimated_minutes:.1f} minutes")
+    print(f"Estimated cost:     ~${total_estimated_cost:.2f} (at ~${AVG_COST_PER_CITY}/city)")
+    print("---------------------\n")
 
 def main():
     """
@@ -580,8 +613,8 @@ def main():
     parser.add_argument(
         "--parallel",
         type=int,
-        default=3,
-        help="Number of parallel queries to run (default: 3)"
+        default=None, # Default to None, will be set based on keys
+        help="Number of parallel queries to run. Defaults to 2x the number of API keys."
     )
     
     parser.add_argument(
@@ -612,32 +645,70 @@ def main():
     if not api_keys:
         parser.error("API keys must be provided via --api-key, --api-keys, or PERPLEXITY_API_KEYS environment variable")
     
-    # Initialize the researcher
-    researcher = PerplexityResearcher(
-        api_keys=api_keys,
-        output_dir=args.output_dir,
-        format="md" if args.format == "markdown" else args.format,
-        delay=args.delay,
-        cost_threshold=args.cost_threshold
-    )
+    # Determine number of parallel workers
+    if args.parallel is None:
+        # Default to 2 workers per API key
+        max_workers = len(api_keys) * 2
+        print(f"Setting parallel workers to {max_workers} (2 per API key)")
+    else:
+        max_workers = args.parallel
+
+    # --- Pre-run estimation ---
+    all_prompt_files = sorted(glob.glob(os.path.join(args.prompts_dir, "*.md")))
+    if not all_prompt_files:
+        print(f"No prompt files found in {args.prompts_dir}")
+        return
+
+    output_format = "md" if args.format == "markdown" else args.format
+    files_to_process = []
+    for file_path in all_prompt_files:
+        base_name = os.path.basename(file_path)
+        expected_output_name = base_name.replace('-prompt.md', '').lower() + f'.{output_format}'
+        output_path = os.path.join(args.output_dir, expected_output_name)
+        if not os.path.exists(output_path):
+            files_to_process.append(file_path)
+
+    print(f"\nFound {len(all_prompt_files)} total prompts, {len(files_to_process)} remaining to be processed.")
+
+    if args.limit:
+        files_to_process = files_to_process[:args.limit]
+        print(f"Will process a maximum of {len(files_to_process)} cities due to --limit.")
+
+    if not files_to_process:
+        print("All cities have already been researched. Nothing to do.")
+        return
+        
+    print_estimates(len(files_to_process), max_workers, args.delay)
+    # --- End estimation ---
+
+    # Initialize a lock for thread-safe cost updates
+    cost_lock = threading.Lock()
+
+    # Create a researcher for each API key
+    researchers = [
+        PerplexityResearcher(
+            api_keys=[key],
+            lock=cost_lock,
+            output_dir=args.output_dir,
+            format=output_format,
+            delay=args.delay,
+            cost_threshold=args.cost_threshold
+        ) for key in api_keys
+    ]
     
     # Process a single file or the entire directory
     try:
         if args.single:
+            # Note: Single file processing is not parallel and uses the first researcher
+            researcher = researchers[0]
             file_path = os.path.join(args.prompts_dir, args.single)
             if os.path.exists(file_path):
                 city_name, clean_filename = researcher.extract_city_name(file_path)
-                # Skip or confirm regeneration for existing single report
                 output_path = os.path.join(researcher.output_dir, f"{clean_filename}.{researcher.format}")
                 if os.path.exists(output_path):
-                    last_mod = os.path.getmtime(output_path)
-                    if time.time() - last_mod < 30*24*3600:
-                        print(f"Skipping {city_name} - report generated less than 1 month ago")
-                        return
-                    ans = input(f"Report for {city_name} older than 1 month. Regenerate? [y/N]: ")
-                    if ans.lower() != 'y':
-                        print(f"Skipping {city_name}")
-                        return
+                    print(f"Skipping {city_name} - report already exists.")
+                    return
+
                 prompt_content = researcher.read_prompt_file(file_path)
                 if prompt_content:
                     response = researcher.process_prompt(prompt_content, city_name)
@@ -646,7 +717,7 @@ def main():
             else:
                 print(f"File not found: {file_path}")
         else:
-            process_files_in_parallel(researcher, args.prompts_dir, args.limit, args.parallel)
+            process_files_in_parallel(researchers, args.prompts_dir, max_workers, args.delay, limit=args.limit)
     except KeyboardInterrupt:
         print(f"\n\nProcess interrupted by user.")
         print(f"TOTAL_COST: ${TOTAL_COST:.4f}")
