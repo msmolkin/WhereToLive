@@ -192,27 +192,27 @@ class PerplexityResearcher:
                 if hasattr(response.usage, 'prompt_tokens'):
                     prompt_tokens = response.usage.prompt_tokens
                     print(f"  - Prompt tokens: {prompt_tokens}")
-                    # Standard model pricing: $0.20/1M tokens for input
-                    cost += (prompt_tokens / 1_000_000) * 0.20
+                    # Standard model pricing: $2/1M tokens for input
+                    cost += (prompt_tokens / 1000000) * 2
                 if hasattr(response.usage, 'completion_tokens'):
                     completion_tokens = response.usage.completion_tokens
                     print(f"  - Completion tokens: {completion_tokens}")
-                    # Standard model pricing: $1.00/1M tokens for output
-                    cost += (completion_tokens / 1_000_000) * 1.00
+                    # Standard model pricing: $8/1M tokens for output
+                    cost += (completion_tokens / 1000000) * 8
                 if hasattr(response.usage, 'reasoning_tokens'):
                     reasoning_tokens = response.usage.reasoning_tokens
                     print(f"  - Reasoning tokens: {reasoning_tokens}")
-                    # Sonar Deep Research specific: $1.00/1M tokens for reasoning
-                    cost += (reasoning_tokens / 1_000_000) * 1.00
+                    # Sonar Deep Research specific: $3/1M tokens for reasoning
+                    cost += (reasoning_tokens / 1000000) * 3
                 if hasattr(response.usage, 'citation_tokens'):
                     citation_tokens = response.usage.citation_tokens
                     print(f"  - Citation tokens: {citation_tokens}")
-                    # Sonar Deep Research specific: $0.20/1M tokens for citations
-                    cost += (citation_tokens / 1_000_000) * 0.20
+                    # Sonar Deep Research specific: $5/1M tokens for citations
+                    cost += (citation_tokens / 1000000) * 5
                 if hasattr(response.usage, 'num_search_queries'):
                     num_searches = response.usage.num_search_queries
                     print(f"  - Search queries: {num_searches}")
-                    # Sonar Deep Research specific: $0.005 per search
+                    # Sonar Deep Research specific: $5 per 1000 searches
                     cost += num_searches * 0.005
 
             if hasattr(response, 'citations'):
