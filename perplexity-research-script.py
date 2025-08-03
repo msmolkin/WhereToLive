@@ -690,7 +690,7 @@ def main():
             api_keys=[key],
             lock=cost_lock,
             output_dir=args.output_dir,
-            format=output_format,
+            format=args.format,
             delay=args.delay,
             cost_threshold=args.cost_threshold
         ) for key in api_keys
