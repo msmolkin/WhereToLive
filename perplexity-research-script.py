@@ -130,17 +130,19 @@ class PerplexityResearcher:
             tuple: (city_name, country_name, clean_filename)
         """
         base_name = os.path.basename(filename)
-        match = re.match(r'(.+)-(.+)-prompt\.md', base_name)
+        # Handle filenames like "city-country-name-prompt.md"
+        # We want to split on the last hyphen before "-prompt.md"
+        name_part = base_name.replace('-prompt.md', '')
+        parts = name_part.rsplit('-', 1)
         
-        if match:
-            city = match.group(1).replace('-', ' ').title()
-            country = match.group(2).replace('-', ' ').title()
+        if len(parts) == 2:
+            city = parts[0].replace('-', ' ').title()
+            country = parts[1].replace('-', ' ').title()
             formatted_name = f"{city}, {country}"
-            # Return the original filename prefix as well (without -prompt.md)
-            clean_filename = base_name.replace('-prompt.md', '')
+            clean_filename = name_part
             return formatted_name, clean_filename
         else:
-            # Just use the filename without extension as a fallback
+            # Fallback for filenames that don't match the city-country format
             clean_name = os.path.splitext(base_name)[0].replace('-prompt', '')
             return clean_name.replace('-', ' ').title(), clean_name
     
